@@ -25,23 +25,22 @@ def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
 
     return [largest_roi] if largest_roi else []
 
-def create_kalman_filter():
-    kf = cv2.KalmanFilter(6, 3)
-    kf.measurementMatrix = np.array([[1, 0, 0, 0, 0, 0],
-                                     [0, 1, 0, 0, 0, 0],
-                                     [0, 0, 1, 0, 0, 0]], np.float32)
-    kf.transitionMatrix = np.array([[1, 0, 0, 1, 0, 0],
-                                     [0, 1, 0, 0, 1, 0],
-                                     [0, 0, 1, 0, 0, 1],
-                                     [0, 0, 0, 1, 0, 0],
-                                     [0, 0, 0, 0, 1, 0],
-                                     [0, 0, 0, 0, 0, 1]], np.float32)
-    kf.processNoiseCov = np.array([[1, 0, 0, 0, 0, 0],
-                                    [0, 1, 0, 0, 0, 0],
-                                    [0, 0, 1, 0, 0, 0],
-                                    [0, 0, 0, 1, 0, 0],
-                                    [0, 0, 0, 0, 1, 0],
-                                    [0, 0, 0, 0, 0, 1]], np.float32) * 0.03
+def create_kalman_filter() -> cv2.KalmanFilter:
+    kf = cv2.KalmanFilter(4, 2)
+    kf.transitionMatrix = np.array([[1, 0, 1, 0],
+                                    [0, 1, 0, 1],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]], np.float32)
+    kf.measurementMatrix = np.array([[1, 0, 0, 0],
+                                     [0, 1, 0, 0]], np.float32)
+    kf.processNoiseCov = np.array([[1, 0, 0, 0],
+                                    [0, 1, 0, 0],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]], np.float32) * 1e-2
+    kf.measurementNoiseCov = np.array([[1, 0],
+                                       [0, 1]], np.float32) * 1e-4
+    kf.errorCovPost = np.eye(4, dtype=np.float32)
+    kf.statePost = np.zeros(4, dtype=np.float32)
     return kf
 
 def get_center(x: float, y: float, w: float, h: float) -> List[float]:
@@ -99,6 +98,9 @@ rgb_xout = p.create(dai.node.XLinkOut)
 rgb_xout.setStreamName("rgb")
 camRgb.video.link(rgb_xout.input)
 
+archive_size = 5
+archive = []
+
 with dai.Device(p) as device:
     qNn = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
     qCam = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
@@ -109,7 +111,7 @@ with dai.Device(p) as device:
         return cv2.applyColorMap(colorize, cv2.COLORMAP_JET)
 
     prev_rois = []
-    decay_time = .5
+    decay_time = 7
     decay_info = []
 
     # Initialize Kalman filter
@@ -122,21 +124,37 @@ with dai.Device(p) as device:
 
         rois = extract_regions_of_interest(diff_frame)
 
-        if prev_rois:
-            for i, curr_roi in enumerate(rois):
-                if i < len(prev_rois):
-                    prev_roi = prev_rois[i]
-                    azimuth, velocity, direction = process_motion_data(prev_roi, curr_roi, 720, 720)
-                    decay_info.append((curr_roi, azimuth, velocity, direction, current_time))
+        # Update the archive
+        archive.append(rois)
+        if len(archive) > archive_size:
+            archive.pop(0)
 
-        # Remove decayed information
-        decay_info = [info for info in decay_info if (current_time - info[4]) < decay_time]
+        # Estimate the center of the larger object
+        larger_object_center = np.zeros(2)
+        roi_count = 0
+        for frame_rois in archive:
+            for x, y, w, h in frame_rois:
+                larger_object_center += np.array([x + w / 2, y + h / 2])
+                roi_count += 1
 
-        # Apply Kalman filter for tracking
-        for info in decay_info:
-            x, y, w, h = info[0]
-            center = get_center(x, y, w, h)
-            kf.correct(np.array(center, np.float32))
+        if roi_count > 0:
+            larger_object_center /= roi_count
+            cv2.circle(video_frame, tuple(larger_object_center.astype(int)), 5, (0, 255, 255), -1)
+
+        # Process regions of interest and update decay_info
+        decay_info = [(roi, *process_motion_data(prev_roi, roi, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_rois]
+
+        # Decay and display information
+        decay_info = [(roi, azimuth, velocity, direction, timestamp) for roi, azimuth, velocity, direction, timestamp in decay_info if current_time - timestamp < decay_time]
+
+        for roi, info in zip(rois, decay_info):
+            x, y, w, h = roi
+            corrected_center = kf.correct(np.array([x + w / 2, y + h / 2], dtype=np.float32))
+            corrected_x, corrected_y = int(corrected_center[0] - w / 2), int(corrected_center[1] - h / 2)
+
+            # Draw the corrected rectangle
+            cv2.rectangle(video_frame, (corrected_x, corrected_y), (corrected_x + w, corrected_y + h), (0, 255, 0), 2)
+
             # Predict next state
             predicted_center = kf.predict()
             predicted_x, predicted_y = int(predicted_center[0] - w / 2), int(predicted_center[1] - h / 2)
