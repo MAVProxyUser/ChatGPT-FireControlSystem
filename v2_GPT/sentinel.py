@@ -1,35 +1,44 @@
-import sentinel_lib as sl
+import argparse
+import cv2
+import sentinel_lib
 
-def main():
-    # Initialize the camera
-    camera_object = sl.init_camera()
-
-    # Initialize the servos
-    servo_objects = sl.init_servos()
+def main(args):
+    # Initialize camera
+    camera = sentinel_lib.init_camera(args.with_myriadx)
 
     # Main loop
     while True:
-        # Perform stereo vision processing
-        stereo_vision_output = sl.stereo_vision_processing(camera_object)
+        # Get frames
+        left_frame, right_frame, center_frame, nn_frame = sentinel_lib.get_frames(camera, args.with_myriadx)
 
-        # Perform target detection and tracking
-        target_info = sl.target_detection_and_tracking(camera_object)
+        # Show preview windows
+        cv2.imshow("Left Mono Camera", left_frame)
+        cv2.imshow("Right Mono Camera", right_frame)
+        cv2.imshow("Center Camera", center_frame)
 
-        # Check if a target is detected
-        if target_info is not None:
-            # Calculate the interception point
-            interception_info = sl.calculate_interception_point(target_info, servo_objects)
+        if args.with_myriadx:
+            cv2.imshow("Neural Net Frame Differences", nn_frame)
 
-            # Control servos to move to the interception point
-            servo_status = sl.control_servos(interception_info, servo_objects)
+        # Exit on key press
+        key = cv2.waitKey(1)
+        if key == 27 or key == ord('q'):
+            break
 
-            # Check if the interception was successful or if further actions are needed
-            # Perform any additional actions if necessary
-            pass
+    # Close camera
+    sentinel_lib.close_camera(camera)
 
-        # Add any other necessary actions or checks in the main loop
-        pass
+    # Close all windows
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--with-myriadx", action="store_true", help="Use MyriadX support")
+    parser.add_argument("--without-myriadx", action="store_true", help="Don't use MyriadX support")
+    args = parser.parse_args()
 
+    # Check if both arguments are provided
+    if args.with_myriadx and args.without_myriadx:
+        raise ValueError("Cannot use both --with-myriadx and --without-myriadx flags")
+
+    main(args)
