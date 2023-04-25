@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import depthai as dai
 import time
+from typing import List
 
 def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
     gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
@@ -23,6 +24,28 @@ def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
                 largest_roi = (x, y, w, h)
 
     return [largest_roi] if largest_roi else []
+
+def create_kalman_filter():
+    kf = cv2.KalmanFilter(6, 3)
+    kf.measurementMatrix = np.array([[1, 0, 0, 0, 0, 0],
+                                     [0, 1, 0, 0, 0, 0],
+                                     [0, 0, 1, 0, 0, 0]], np.float32)
+    kf.transitionMatrix = np.array([[1, 0, 0, 1, 0, 0],
+                                     [0, 1, 0, 0, 1, 0],
+                                     [0, 0, 1, 0, 0, 1],
+                                     [0, 0, 0, 1, 0, 0],
+                                     [0, 0, 0, 0, 1, 0],
+                                     [0, 0, 0, 0, 0, 1]], np.float32)
+    kf.processNoiseCov = np.array([[1, 0, 0, 0, 0, 0],
+                                    [0, 1, 0, 0, 0, 0],
+                                    [0, 0, 1, 0, 0, 0],
+                                    [0, 0, 0, 1, 0, 0],
+                                    [0, 0, 0, 0, 1, 0],
+                                    [0, 0, 0, 0, 0, 1]], np.float32) * 0.03
+    return kf
+
+def get_center(x: float, y: float, w: float, h: float) -> List[float]:
+    return [x + w / 2, y + h / 2, 1]
 
 def process_motion_data(prev_roi, curr_roi, frame_width, frame_height):
     prev_x, prev_y, prev_w, prev_h = prev_roi
@@ -86,8 +109,11 @@ with dai.Device(p) as device:
         return cv2.applyColorMap(colorize, cv2.COLORMAP_JET)
 
     prev_rois = []
-    decay_time = 7
+    decay_time = .5
     decay_info = []
+
+    # Initialize Kalman filter
+    kf = create_kalman_filter()
 
     while True:
         diff_frame = get_frame(qNn.get(), (720, 720))
@@ -106,15 +132,23 @@ with dai.Device(p) as device:
         # Remove decayed information
         decay_info = [info for info in decay_info if (current_time - info[4]) < decay_time]
 
-        # Draw regions of interest and text on the video frame
+        # Apply Kalman filter for tracking
         for info in decay_info:
             x, y, w, h = info[0]
-            azimuth, velocity, direction = info[1], info[2], info[3]
-            cv2.rectangle(video_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            center = get_center(x, y, w, h)
+            kf.correct(np.array(center, np.float32))
+            # Predict next state
+            predicted_center = kf.predict()
+            predicted_x, predicted_y = int(predicted_center[0] - w / 2), int(predicted_center[1] - h / 2)
 
-            cv2.putText(video_frame, f"Azimuth: {azimuth:.2f}", (x, y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv2.putText(video_frame, f"Velocity: {velocity:.2f}", (x, y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv2.putText(video_frame, f"Direction: {direction:.2f}", (x, y - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            # Draw the predicted rectangle
+            cv2.rectangle(video_frame, (predicted_x, predicted_y), (predicted_x + w, predicted_y + h), (255, 0, 0), 2)
+
+            # Display Azimuth, Velocity, and Direction on the video frame
+            azimuth, velocity, direction, _ = info[1:]
+            cv2.putText(video_frame, f"Azimuth: {azimuth:.2f}", (predicted_x, predicted_y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            cv2.putText(video_frame, f"Velocity: {velocity:.2f}", (predicted_x, predicted_y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            cv2.putText(video_frame, f"Direction: {direction:.2f}", (predicted_x, predicted_y - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
         prev_rois = rois
 
@@ -123,4 +157,5 @@ with dai.Device(p) as device:
 
         if cv2.waitKey(1) == ord('q'):
             break
+
 
