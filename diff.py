@@ -3,6 +3,7 @@ import cv2
 import depthai as dai
 import time
 from typing import List, Tuple
+from functools import partial
 
 def get_roi_area(roi):
     _, _, w, h = roi
@@ -89,15 +90,27 @@ def process_motion_data(prev_roi, curr_roi, frame_width, frame_height):
 
     return azimuth, velocity, direction
 
-p = dai.Pipeline()
-p.setOpenVINOVersion(dai.OpenVINO.VERSION_2021_4)
+def draw_depth_circle(depth_frame: np.ndarray, video_frame: np.ndarray, position: Tuple[int, int], radius: int, color: Tuple[int, int, int], thickness: int) -> None:
+    x, y = position
+    depth = depth_frame[y, x]
+    if depth != 0:
+        cv2.circle(video_frame, (x, y), radius, color, thickness)
 
+def get_frame(data: dai.NNData, shape):
+    diff = np.array(data.getFirstLayerFp16()).reshape(shape)
+    colorize = cv2.normalize(diff, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+    return cv2.applyColorMap(colorize, cv2.COLORMAP_JET)
+
+p = dai.Pipeline()
+
+# Create a source - color camera
 camRgb = p.create(dai.node.ColorCamera)
 camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 camRgb.setVideoSize(720, 720)
 camRgb.setPreviewSize(720, 720)
 camRgb.setInterleaved(False)
 
+# Add NN creation back to the pipeline
 nn = p.create(dai.node.NeuralNetwork)
 nn.setBlobPath("models/diff_openvino_2021.4_6shave.blob")
 
@@ -118,21 +131,38 @@ nn_xout = p.create(dai.node.XLinkOut)
 nn_xout.setStreamName("nn")
 nn.out.link(nn_xout.input)
 
+# Create an xlink output for color frames
 rgb_xout = p.create(dai.node.XLinkOut)
 rgb_xout.setStreamName("rgb")
 camRgb.video.link(rgb_xout.input)
 
-archive_size = 5
-archive = []
+# Add depth to the pipeline
+monoLeft = p.create(dai.node.MonoCamera)
+monoRight = p.create(dai.node.MonoCamera)
+depth = p.create(dai.node.StereoDepth)
+xlink_out_depth = p.create(dai.node.XLinkOut)
+
+monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
+monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+
+depth.initialConfig.setConfidenceThreshold(200)
+depth.initialConfig.setMedianFilter(dai.StereoDepthProperties.MedianFilter.KERNEL_7x7)
+
+monoLeft.out.link(depth.left)
+monoRight.out.link(depth.right)
+
+depth.disparity.link(xlink_out_depth.input)
+xlink_out_depth.setStreamName("depth")
 
 with dai.Device(p) as device:
     qNn = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
     qCam = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+    qDepth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
 
-    def get_frame(data: dai.NNData, shape):
-        diff = np.array(data.getFirstLayerFp16()).reshape(shape)
-        colorize = cv2.normalize(diff, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
-        return cv2.applyColorMap(colorize, cv2.COLORMAP_JET)
+    archive = []
+    archive_size = 5
 
     prev_rois = []
     decay_time = 3
@@ -147,6 +177,7 @@ with dai.Device(p) as device:
     WINDOW_HEIGHT = 720
 
     while True:
+        depth_frame = qDepth.get().getFrame()
         diff_frame = get_frame(qNn.get(), (720, 720))
         video_frame = qCam.get().getCvFrame()
         current_time = time.time()
@@ -175,6 +206,7 @@ with dai.Device(p) as device:
 
         # Process regions of interest and update decay_info
         decay_info = [(roi, *process_motion_data(prev_roi, roi, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_roi is not None]
+
         for roi, azimuth, velocity, direction, roi_time in decay_info:
             x, y, w, h = roi
             center = get_center(x, y, w, h)
@@ -188,7 +220,7 @@ with dai.Device(p) as device:
             interception_points.append((frame_number, interception_x, interception_y))
 
             # Draw the green dot for the interception point
-            cv2.circle(video_frame, (int(interception_x), int(interception_y)), 5, (0, 255, 0), -1)
+            draw_depth_circle(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 255, 0), -1)
 
         prev_rois = rois
 
@@ -210,3 +242,4 @@ with dai.Device(p) as device:
             break
 
 cv2.destroyAllWindows()
+
