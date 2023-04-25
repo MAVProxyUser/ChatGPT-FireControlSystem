@@ -2,7 +2,30 @@ import numpy as np
 import cv2
 import depthai as dai
 import time
-from typing import List
+from typing import List, Tuple
+
+def get_roi_area(roi):
+    _, _, w, h = roi
+    return w * h
+
+def limit_lead_distance(yellow_x, yellow_y, green_x, green_y, max_distance=50):
+    dx = green_x - yellow_x
+    dy = green_y - yellow_y
+    distance = np.sqrt(dx ** 2 + dy ** 2)
+
+    if distance > max_distance:
+        green_x = yellow_x + (dx / distance) * max_distance
+        green_y = yellow_y + (dy / distance) * max_distance
+
+    return green_x, green_y
+
+def get_interception_point(x: float, y: float, velocity: float, direction: float, lead_time: float) -> Tuple[float, float]:
+    direction_rad = np.deg2rad(direction)
+    delta_x = velocity * np.cos(direction_rad) * lead_time
+    delta_y = velocity * np.sin(direction_rad) * lead_time
+    interception_x = x + delta_x
+    interception_y = y + delta_y
+    return interception_x, interception_y
 
 def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
     gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
@@ -16,7 +39,7 @@ def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
 
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        
+
         if w >= min_side_length and h >= min_side_length:
             area = w * h
             if area > largest_area:
@@ -70,6 +93,7 @@ p = dai.Pipeline()
 p.setOpenVINOVersion(dai.OpenVINO.VERSION_2021_4)
 
 camRgb = p.create(dai.node.ColorCamera)
+camRgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
 camRgb.setVideoSize(720, 720)
 camRgb.setPreviewSize(720, 720)
 camRgb.setInterleaved(False)
@@ -111,11 +135,16 @@ with dai.Device(p) as device:
         return cv2.applyColorMap(colorize, cv2.COLORMAP_JET)
 
     prev_rois = []
-    decay_time = 7
+    decay_time = 3
     decay_info = []
+    interception_points = []
 
     # Initialize Kalman filter
     kf = create_kalman_filter()
+
+    frame_number = 0
+    WINDOW_WIDTH = 720
+    WINDOW_HEIGHT = 720
 
     while True:
         diff_frame = get_frame(qNn.get(), (720, 720))
@@ -129,11 +158,14 @@ with dai.Device(p) as device:
         if len(archive) > archive_size:
             archive.pop(0)
 
+        n_largest_rois = 3  # Change this value to consider more or fewer top ROIs
+
         # Estimate the center of the larger object
         larger_object_center = np.zeros(2)
         roi_count = 0
         for frame_rois in archive:
-            for x, y, w, h in frame_rois:
+            sorted_rois = sorted(frame_rois, key=get_roi_area, reverse=True)[:n_largest_rois]
+            for x, y, w, h in sorted_rois:
                 larger_object_center += np.array([x + w / 2, y + h / 2])
                 roi_count += 1
 
@@ -142,38 +174,39 @@ with dai.Device(p) as device:
             cv2.circle(video_frame, tuple(larger_object_center.astype(int)), 5, (0, 255, 255), -1)
 
         # Process regions of interest and update decay_info
-        decay_info = [(roi, *process_motion_data(prev_roi, roi, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_rois]
-
-        # Decay and display information
-        decay_info = [(roi, azimuth, velocity, direction, timestamp) for roi, azimuth, velocity, direction, timestamp in decay_info if current_time - timestamp < decay_time]
-
-        for roi, info in zip(rois, decay_info):
+        decay_info = [(roi, *process_motion_data(prev_roi, roi, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_roi is not None]
+        for roi, azimuth, velocity, direction, roi_time in decay_info:
             x, y, w, h = roi
-            corrected_center = kf.correct(np.array([x + w / 2, y + h / 2], dtype=np.float32))
-            corrected_x, corrected_y = int(corrected_center[0] - w / 2), int(corrected_center[1] - h / 2)
+            center = get_center(x, y, w, h)
+            lead_time = 1  # Change this value to adjust the distance between the yellow and green dots
 
-            # Draw the corrected rectangle
-            cv2.rectangle(video_frame, (corrected_x, corrected_y), (corrected_x + w, corrected_y + h), (0, 255, 0), 2)
+            # Get the interception point and limit its distance from the yellow dot
+            interception_x, interception_y = get_interception_point(larger_object_center[0], larger_object_center[1], velocity, direction, lead_time)
+            interception_x, interception_y = limit_lead_distance(larger_object_center[0], larger_object_center[1], interception_x, interception_y)
 
-            # Predict next state
-            predicted_center = kf.predict()
-            predicted_x, predicted_y = int(predicted_center[0] - w / 2), int(predicted_center[1] - h / 2)
+            # Update the interception point in the interception_points list
+            interception_points.append((frame_number, interception_x, interception_y))
 
-            # Draw the predicted rectangle
-            cv2.rectangle(video_frame, (predicted_x, predicted_y), (predicted_x + w, predicted_y + h), (255, 0, 0), 2)
-
-            # Display Azimuth, Velocity, and Direction on the video frame
-            azimuth, velocity, direction, _ = info[1:]
-            cv2.putText(video_frame, f"Azimuth: {azimuth:.2f}", (predicted_x, predicted_y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv2.putText(video_frame, f"Velocity: {velocity:.2f}", (predicted_x, predicted_y - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv2.putText(video_frame, f"Direction: {direction:.2f}", (predicted_x, predicted_y - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            # Draw the green dot for the interception point
+            cv2.circle(video_frame, (int(interception_x), int(interception_y)), 5, (0, 255, 0), -1)
 
         prev_rois = rois
+
+        # Flip images horizontally
+        diff_frame = cv2.flip(diff_frame, 1)
+        video_frame = cv2.flip(video_frame, 1)
 
         cv2.imshow("Diff", diff_frame)
         cv2.imshow("Color", video_frame)
 
-        if cv2.waitKey(1) == ord('q'):
+        # Move windows
+        cv2.moveWindow("Diff", 0, 0)
+        cv2.moveWindow("Color", WINDOW_WIDTH , 0)
+
+        frame_number += 1
+
+        key = cv2.waitKey(1)
+        if key == 27 or key == ord("q"):
             break
 
-
+cv2.destroyAllWindows()
