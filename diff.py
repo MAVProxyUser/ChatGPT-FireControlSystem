@@ -119,6 +119,13 @@ def draw_depth_cross(depth_frame: np.ndarray, video_frame: np.ndarray, position:
             cv2.line(video_frame, (x - radius, y), (x + radius, y), color, thickness)
             cv2.line(video_frame, (x, y - radius), (x, y + radius), color, thickness)
 
+def draw_depth_dot(depth_frame: np.ndarray, video_frame: np.ndarray, position: Tuple[int, int], radius: int, color: Tuple[int, int, int], thickness: int = -1) -> None:
+    x, y = position
+    if 0 <= x < video_frame.shape[1] and 0 <= y < video_frame.shape[0]:
+        depth = depth_frame[y, x]
+        if depth != 0:
+            cv2.circle(video_frame, (x, y), radius, color, thickness)
+
 def get_frame(data: dai.NNData, shape):
     diff = np.array(data.getFirstLayerFp16()).reshape(shape)
     colorize = cv2.normalize(diff, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
@@ -239,6 +246,7 @@ with dai.Device(p) as device:
         for roi, depth_corrected_azimuth, velocity, direction, roi_time in decay_info:
             x, y, w, h = roi
             center = get_center(x, y, w, h)
+
             lead_time = 1  # Change this value to adjust the distance between the yellow and red dots
 
             # Get the interception point and limit its distance from the green dot
@@ -256,7 +264,11 @@ with dai.Device(p) as device:
             draw_depth_circle(depth_frame, video_frame, (int(x + w / 2), int(y + h / 2)), 5, (0, 255, 255), -1, alpha=decay_alpha)
 
             # Draw the red X for the leading dot
-            draw_depth_cross(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 0, 255), 1)
+            # draw_depth_cross(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 0, 255), 2)
+
+            # Draw the red dot for the leading dot
+            draw_depth_dot(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 0, 255))
+
 
         prev_rois = rois
 
