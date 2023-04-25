@@ -20,12 +20,13 @@ def limit_lead_distance(yellow_x, yellow_y, green_x, green_y, max_distance=50):
 
     return green_x, green_y
 
-def get_interception_point(x: float, y: float, velocity: float, direction: float, lead_time: float) -> Tuple[float, float]:
-    direction_rad = np.deg2rad(direction)
-    delta_x = velocity * np.cos(direction_rad) * lead_time
-    delta_y = velocity * np.sin(direction_rad) * lead_time
-    interception_x = x + delta_x
-    interception_y = y + delta_y
+def get_interception_point(x, y, velocity, depth_corrected_azimuth, lead_time):
+    # Convert depth_corrected_azimuth back to radians
+    depth_corrected_azimuth_rad = np.radians(depth_corrected_azimuth)
+
+    # Calculate the interception point
+    interception_x = x + velocity * lead_time * np.cos(depth_corrected_azimuth_rad)
+    interception_y = y + velocity * lead_time * np.sin(depth_corrected_azimuth_rad)
     return interception_x, interception_y
 
 def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
@@ -50,27 +51,33 @@ def extract_regions_of_interest(diff, threshold=0.2, min_side_length=25):
     return [largest_roi] if largest_roi else []
 
 def create_kalman_filter() -> cv2.KalmanFilter:
-    kf = cv2.KalmanFilter(4, 2)
-    kf.transitionMatrix = np.array([[1, 0, 1, 0],
-                                    [0, 1, 0, 1],
-                                    [0, 0, 1, 0],
-                                    [0, 0, 0, 1]], np.float32)
-    kf.measurementMatrix = np.array([[1, 0, 0, 0],
-                                     [0, 1, 0, 0]], np.float32)
-    kf.processNoiseCov = np.array([[1, 0, 0, 0],
-                                    [0, 1, 0, 0],
-                                    [0, 0, 1, 0],
-                                    [0, 0, 0, 1]], np.float32) * 1e-2
-    kf.measurementNoiseCov = np.array([[1, 0],
-                                       [0, 1]], np.float32) * 1e-4
-    kf.errorCovPost = np.eye(4, dtype=np.float32)
-    kf.statePost = np.zeros(4, dtype=np.float32)
+    kf = cv2.KalmanFilter(6, 3)
+    kf.transitionMatrix = np.array([[1, 0, 0, 1, 0, 0],
+                                    [0, 1, 0, 0, 1, 0],
+                                    [0, 0, 1, 0, 0, 1],
+                                    [0, 0, 0, 1, 0, 0],
+                                    [0, 0, 0, 0, 1, 0],
+                                    [0, 0, 0, 0, 0, 1]], np.float32)
+    kf.measurementMatrix = np.array([[1, 0, 0, 0, 0, 0],
+                                     [0, 1, 0, 0, 0, 0],
+                                     [0, 0, 1, 0, 0, 0]], np.float32)
+    kf.processNoiseCov = np.array([[1, 0, 0, 0, 0, 0],
+                                    [0, 1, 0, 0, 0, 0],
+                                    [0, 0, 1, 0, 0, 0],
+                                    [0, 0, 0, 1, 0, 0],
+                                    [0, 0, 0, 0, 1, 0],
+                                    [0, 0, 0, 0, 0, 1]], np.float32) * 1e-2
+    kf.measurementNoiseCov = np.array([[1, 0, 0],
+                                       [0, 1, 0],
+                                       [0, 0, 1]], np.float32) * 1e-4
+    kf.errorCovPost = np.eye(6, dtype=np.float32)
+    kf.statePost = np.zeros(6, dtype=np.float32)
     return kf
 
 def get_center(x: float, y: float, w: float, h: float) -> List[float]:
     return [x + w / 2, y + h / 2, 1]
 
-def process_motion_data(prev_roi, curr_roi, frame_width, frame_height):
+def process_motion_data(prev_roi, curr_roi, prev_depth_frame, curr_depth_frame, frame_width, frame_height):
     prev_x, prev_y, prev_w, prev_h = prev_roi
     curr_x, curr_y, curr_w, curr_h = curr_roi
 
@@ -88,13 +95,29 @@ def process_motion_data(prev_roi, curr_roi, frame_width, frame_height):
     velocity = np.sqrt(delta_x ** 2 + delta_y ** 2)
     direction = np.arctan2(delta_y, delta_x) * 180 / np.pi
 
-    return azimuth, velocity, direction
+    # Calculate depth-corrected azimuth
+    prev_depth = prev_depth_frame[prev_y + prev_h // 2, prev_x + prev_w // 2]
+    curr_depth = curr_depth_frame[curr_y + curr_h // 2, curr_x + curr_w // 2]
+    depth_diff = int(curr_depth) - int(prev_depth)
+    depth_corrected_azimuth = azimuth + depth_diff
 
-def draw_depth_circle(depth_frame: np.ndarray, video_frame: np.ndarray, position: Tuple[int, int], radius: int, color: Tuple[int, int, int], thickness: int) -> None:
+    return depth_corrected_azimuth, velocity, direction
+
+def draw_depth_circle(depth_frame: np.ndarray, video_frame: np.ndarray, position: Tuple[int, int], radius: int, color: Tuple[int, int, int], thickness: int, alpha: float = 1.0) -> None:
     x, y = position
     depth = depth_frame[y, x]
     if depth != 0:
-        cv2.circle(video_frame, (x, y), radius, color, thickness)
+        overlay = video_frame.copy()
+        cv2.circle(overlay, (x, y), radius, color, thickness)
+        cv2.addWeighted(overlay, alpha, video_frame, 1 - alpha, 0, video_frame)
+
+def draw_depth_cross(depth_frame: np.ndarray, video_frame: np.ndarray, position: Tuple[int, int], radius: int, color: Tuple[int, int, int], thickness: int = 2) -> None:
+    x, y = position
+    if 0 <= x < video_frame.shape[1] and 0 <= y < video_frame.shape[0]:
+        depth = depth_frame[y, x]
+        if depth != 0:
+            cv2.line(video_frame, (x - radius, y), (x + radius, y), color, thickness)
+            cv2.line(video_frame, (x, y - radius), (x, y + radius), color, thickness)
 
 def get_frame(data: dai.NNData, shape):
     diff = np.array(data.getFirstLayerFp16()).reshape(shape)
@@ -168,6 +191,7 @@ with dai.Device(p) as device:
     decay_time = 3
     decay_info = []
     interception_points = []
+    prev_depth_frame = None
 
     # Initialize Kalman filter
     kf = create_kalman_filter()
@@ -178,6 +202,11 @@ with dai.Device(p) as device:
 
     while True:
         depth_frame = qDepth.get().getFrame()
+        if prev_depth_frame is None:
+            prev_depth_frame = depth_frame.copy()
+        else:
+            prev_depth_frame = depth_frame
+
         diff_frame = get_frame(qNn.get(), (720, 720))
         video_frame = qCam.get().getCvFrame()
         current_time = time.time()
@@ -202,25 +231,32 @@ with dai.Device(p) as device:
 
         if roi_count > 0:
             larger_object_center /= roi_count
-            cv2.circle(video_frame, tuple(larger_object_center.astype(int)), 5, (0, 255, 255), -1)
+            cv2.circle(video_frame, tuple(larger_object_center.astype(int)), 5, (0, 255, 0), -1)
 
         # Process regions of interest and update decay_info
-        decay_info = [(roi, *process_motion_data(prev_roi, roi, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_roi is not None]
+        decay_info = [(roi, *process_motion_data(prev_roi, roi, prev_depth_frame, depth_frame, 720, 720), current_time) for prev_roi, roi in zip(prev_rois, rois) if prev_roi is not None]
 
-        for roi, azimuth, velocity, direction, roi_time in decay_info:
+        for roi, depth_corrected_azimuth, velocity, direction, roi_time in decay_info:
             x, y, w, h = roi
             center = get_center(x, y, w, h)
-            lead_time = 1  # Change this value to adjust the distance between the yellow and green dots
+            lead_time = 1  # Change this value to adjust the distance between the yellow and red dots
 
-            # Get the interception point and limit its distance from the yellow dot
-            interception_x, interception_y = get_interception_point(larger_object_center[0], larger_object_center[1], velocity, direction, lead_time)
-            interception_x, interception_y = limit_lead_distance(larger_object_center[0], larger_object_center[1], interception_x, interception_y)
+            # Get the interception point and limit its distance from the green dot
+            interception_x, interception_y = get_interception_point(center[0], center[1], velocity, depth_corrected_azimuth, lead_time)
+            interception_x, interception_y = limit_lead_distance(center[0], center[1], interception_x, interception_y)
 
             # Update the interception point in the interception_points list
             interception_points.append((frame_number, interception_x, interception_y))
 
-            # Draw the green dot for the interception point
-            draw_depth_circle(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 255, 0), -1)
+            # Calculate alpha based on age
+            age = current_time - roi_time
+            decay_alpha = 1.0 - min(age / decay_time, 1.0)
+
+            # Draw the yellow dot for the decaying previous detection
+            draw_depth_circle(depth_frame, video_frame, (int(x + w / 2), int(y + h / 2)), 5, (0, 255, 255), -1, alpha=decay_alpha)
+
+            # Draw the red X for the leading dot
+            draw_depth_cross(depth_frame, video_frame, (int(interception_x), int(interception_y)), 5, (0, 0, 255), 1)
 
         prev_rois = rois
 
