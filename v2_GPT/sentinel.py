@@ -1,33 +1,28 @@
 import argparse
 import cv2
 import sentinel_lib
+import numpy as np
 
 def main(args):
-    # Initialize camera
     camera = sentinel_lib.init_camera(args.with_myriadx)
 
-    # Main loop
     while True:
-        # Get frames
         left_frame, right_frame, center_frame, nn_frame = sentinel_lib.get_frames(camera, args.with_myriadx)
 
-        # Show preview windows
-        cv2.imshow("Left Mono Camera", left_frame)
-        cv2.imshow("Right Mono Camera", right_frame)
+        cv2.imshow("Left Camera", left_frame)
+        cv2.imshow("Right Camera", right_frame)
         cv2.imshow("Center Camera", center_frame)
 
         if args.with_myriadx:
-            cv2.imshow("Neural Net Frame Differences", nn_frame)
+            nn_frame = np.array(nn_frame).reshape(720, 720)  # Reshape the array to match the image dimensions
+            nn_frame_normalized = cv2.normalize(nn_frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            cv2.imshow("Neural Net Frame Differences", nn_frame_normalized)
 
-        # Exit on key press
         key = cv2.waitKey(1)
-        if key == 27 or key == ord('q'):
+        if key == 27:  # ESC key
             break
 
-    # Close camera
     sentinel_lib.close_camera(camera)
-
-    # Close all windows
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":

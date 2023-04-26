@@ -1,107 +1,74 @@
-from dynamixel_sdk import *
-
 import depthai as dai
 import cv2
-import numpy as np
+import apriltag
 
-def init_camera(with_myriadx):
-    # Start the pipeline
-    pipeline = dai.Pipeline()
+def process_frame(frame, window_name):
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    detections = detector.detect(gray_frame)
 
-    # Define the sources and outputs
-    left = pipeline.createMonoCamera()
-    left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
-    left.setBoardSocket(dai.CameraBoardSocket.LEFT)
-    
-    right = pipeline.createMonoCamera()
-    right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
-    right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+    for detection in detections:
+        cv2.circle(frame, tuple(detection.center.astype(int)), 4, (0, 255, 0), 2)
+        cv2.putText(frame, str(detection.tag_id), tuple(detection.center.astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.imshow(window_name, frame)
 
-    center = pipeline.createColorCamera()
-    center.setResolution(dai.ColorCameraProperties.SensorResolution.THE_12_MP)
-    center.setBoardSocket(dai.CameraBoardSocket.RGB)
+# Initialize AprilTag detector
+detector = apriltag.Detector()
 
-    # Output streams
-    xout_left = pipeline.createXLinkOut()
-    xout_left.setStreamName("left")
-    left.out.link(xout_left.input)
+# Initialize Luxonis OAK-1-MAX pipeline
+pipeline = dai.Pipeline()
 
-    xout_right = pipeline.createXLinkOut()
-    xout_right.setStreamName("right")
-    right.out.link(xout_right.input)
+# Color camera
+cam = pipeline.createColorCamera()
+cam.setPreviewSize(640, 480)
+cam.setInterleaved(False)
+cam.setFps(30)
+xout_color = pipeline.createXLinkOut()
+xout_color.setStreamName("color")
+cam.preview.link(xout_color.input)
 
-    xout_center = pipeline.createXLinkOut()
-    xout_center.setStreamName("center")
-    center.video.link(xout_center.input)
+# Mono cameras
+left = pipeline.createMonoCamera()
+left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+xout_left = pipeline.createXLinkOut()
+xout_left.setStreamName("left")
+left.out.link(xout_left.input)
 
-    # Neural network node
-    if with_myriadx:
-        neural_network = pipeline.createNeuralNetwork()
-        neural_network.setBlobPath("diff_openvino_2021.4_6shave.blob")
-        neural_network.input.setBlocking(False)
-        neural_network_xout = pipeline.createXLinkOut()
-        neural_network_xout.setStreamName("nn")
-        neural_network.out.link(neural_network_xout.input)
+right = pipeline.createMonoCamera()
+right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+xout_right = pipeline.createXLinkOut()
+xout_right.setStreamName("right")
+right.out.link(xout_right.input)
 
-    # Connect and start the pipeline
-    device = dai.Device(pipeline)
-    device.startPipeline()
+# Create device and start the pipeline
+device = dai.Device(pipeline)
 
-    return device
+color_queue = device.getOutputQueue(name="color", maxSize=1, blocking=False)
+left_queue = device.getOutputQueue(name="left", maxSize=1, blocking=False)
+right_queue = device.getOutputQueue(name="right", maxSize=1, blocking=False)
 
-def get_frames(device, with_myriadx):
-    # Get output queues
-    left_queue = device.getOutputQueue(name="left", maxSize=4, blocking=False)
-    right_queue = device.getOutputQueue(name="right", maxSize=4, blocking=False)
-    center_queue = device.getOutputQueue(name="center", maxSize=4, blocking=False)
-    if with_myriadx:
-        nn_queue = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+while True:
+    # Get the current frame from the color camera
+    color_frame = color_queue.get().getCvFrame()
 
-    # Get the frames
+    # Process the color frame
+    process_frame(color_frame, 'Color Camera')
+
+    # Get the current frame from the left and right mono cameras
     left_frame = left_queue.get().getCvFrame()
     right_frame = right_queue.get().getCvFrame()
-    center_frame = center_queue.get().getCvFrame()
 
-    if with_myriadx:
-        nn_frame = nn_queue.get().getFirstLayerFp16()
-    else:
-        nn_frame = None
+    # Preview the mono camera frames
+    cv2.imshow('Left Camera', left_frame)
+    cv2.imshow('Right Camera', right_frame)
 
-    return left_frame, right_frame, center_frame, nn_frame
+    # Exit the loop if 'q' key is pressed
+    if cv2.waitKey(1) == ord('q'):
+        break
 
-def close_camera(device):
-    device.close()
-
-# Function to initialize servos
-def init_servos():
-    # Read servo settings from config file
-    # Initialize the Dynamixel MX-28 servos and return the servo objects
-    pass
-
-# Function for stereo vision processing
-def stereo_vision_processing(camera_object):
-    # Perform stereo vision processing on the camera_object
-    # Return the processed output (e.g., disparity map, depth map, etc.)
-    pass
-
-# Function for target detection and tracking
-def target_detection_and_tracking(camera_object):
-    # Perform target detection and tracking on the camera_object
-    # Return the detected target's position, velocity, and other relevant information
-    pass
-
-# Function for calculating interception point
-def calculate_interception_point(target_info, servo_objects):
-    # Calculate the interception point based on target_info and servo_objects
-    # Return the interception point coordinates and required servo angles
-    pass
-
-# Function for controlling servos to move to the interception point
-def control_servos(interception_info, servo_objects):
-    # Control the servos to move to the interception point based on interception_info
-    # Return the updated servo status
-    pass
-
-# Add any other necessary library functions here
-
+# Clean up
+cv2.destroyAllWindows()
+device.close()
+device = None
 
