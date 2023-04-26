@@ -1,39 +1,37 @@
-import argparse
 import cv2
 import sentinel_lib
-import numpy as np
 
-def main(args):
-    camera = sentinel_lib.init_camera(args.with_myriadx)
+# Create and start the pipeline
+pipeline = sentinel_lib.create_pipeline()
+sentinel_lib.start_pipeline(pipeline)
 
-    while True:
-        left_frame, right_frame, center_frame, nn_frame = sentinel_lib.get_frames(camera, args.with_myriadx)
+while True:
+    # Get the current frame from the color camera
+    color_frame = sentinel_lib.color_queue.get().getCvFrame()
 
-        cv2.imshow("Left Camera", left_frame)
-        cv2.imshow("Right Camera", right_frame)
-        cv2.imshow("Center Camera", center_frame)
+    # Process the color frame
+    sentinel_lib.process_frame(color_frame, 'Color Camera')
+    cv2.moveWindow('Color Camera', 640, 0)
 
-        if args.with_myriadx:
-            nn_frame = np.array(nn_frame).reshape(720, 720)  # Reshape the array to match the image dimensions
-            nn_frame_normalized = cv2.normalize(nn_frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-            cv2.imshow("Neural Net Frame Differences", nn_frame_normalized)
+    # Get the current frame from the left and right mono cameras
+    left_frame = sentinel_lib.left_queue.get().getCvFrame()
+    right_frame = sentinel_lib.right_queue.get().getCvFrame()
 
-        key = cv2.waitKey(1)
-        if key == 27:  # ESC key
-            break
+    # Resize the mono camera frames to match the color camera frame size
+    left_frame = cv2.resize(left_frame, (640, 480))
+    right_frame = cv2.resize(right_frame, (640, 480))
 
-    sentinel_lib.close_camera(camera)
-    cv2.destroyAllWindows()
+    # Preview the mono camera frames
+    cv2.imshow('Left Camera', left_frame)
+    cv2.imshow('Right Camera', right_frame)
 
-if __name__ == "__main__":
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--with-myriadx", action="store_true", help="Use MyriadX support")
-    parser.add_argument("--without-myriadx", action="store_true", help="Don't use MyriadX support")
-    args = parser.parse_args()
+    cv2.moveWindow('Left Camera', 0, 0)
+    cv2.moveWindow('Right Camera', 1280, 0)
 
-    # Check if both arguments are provided
-    if args.with_myriadx and args.without_myriadx:
-        raise ValueError("Cannot use both --with-myriadx and --without-myriadx flags")
+    # Exit the loop if 'q' key is pressed
+    if cv2.waitKey(1) == ord('q'):
+        break
 
-    main(args)
+# Clean up
+sentinel_lib.close_pipeline()
+
