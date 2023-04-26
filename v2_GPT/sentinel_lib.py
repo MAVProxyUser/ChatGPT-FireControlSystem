@@ -3,7 +3,11 @@ import cv2
 import apriltag
 
 def process_frame(frame, window_name):
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if frame.ndim == 3:  # If the input frame has 3 channels (BGR)
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    else:  # If the input frame is already grayscale (mono cameras)
+        gray_frame = frame
+
     detections = detector.detect(gray_frame)
 
     for detection in detections:
@@ -56,6 +60,17 @@ def start_pipeline(pipeline):
     color_queue = device.getOutputQueue(name="color", maxSize=1, blocking=False)
     left_queue = device.getOutputQueue(name="left", maxSize=1, blocking=False)
     right_queue = device.getOutputQueue(name="right", maxSize=1, blocking=False)
+
+    # Set window properties and move the windows to display side by side
+    cv2.namedWindow('Color Camera', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('Left Mono Camera', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('Right Mono Camera', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Color Camera', 640, 480)
+    cv2.resizeWindow('Left Mono Camera', 640, 480)
+    cv2.resizeWindow('Right Mono Camera', 640, 480)
+    cv2.moveWindow('Color Camera', 0, 0)
+    cv2.moveWindow('Left Mono Camera', 640, 0)
+    cv2.moveWindow('Right Mono Camera', 1280, 0)
 
 def close_pipeline():
     cv2.destroyAllWindows()
