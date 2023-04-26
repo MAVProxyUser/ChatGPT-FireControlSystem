@@ -7,6 +7,7 @@ def process_frame(frame, window_name):
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     else:  # If the input frame is already grayscale (mono cameras)
         gray_frame = frame
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
     detections = detector.detect(gray_frame)
 
