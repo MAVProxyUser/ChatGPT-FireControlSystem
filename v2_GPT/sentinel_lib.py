@@ -64,8 +64,6 @@ def get_frames(device, with_myriadx):
 
     if with_myriadx:
         nn_frame = nn_queue.get().getFirstLayerFp16()
-#        nn_frame = np.array(nn_frame).reshape(480, 640) # Reshape the output based on your neural network
-        nn_frame = np.array(nn_frame).reshape(720, 720) # Reshape the output based on your neural network
     else:
         nn_frame = None
 
