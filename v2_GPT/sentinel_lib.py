@@ -1,6 +1,28 @@
 import depthai as dai
 import cv2
 import apriltag
+import json
+import os
+
+device = None
+color_queue = None
+left_queue = None
+right_queue = None
+detector = None
+
+def load_calibration_data(filename="calibration_data.json"):
+    if not os.path.exists(filename):
+        return None
+    with open(filename, 'r') as infile:
+        return json.load(infile)
+
+def save_calibration_data(calibration_data, filename="calibration_data.json"):
+    with open(filename, 'w') as outfile:
+        json.dump(calibration_data, outfile)
+
+def load_calibration_data(filename="calibration_data.json"):
+    with open(filename, 'r') as infile:
+        return json.load(infile)
 
 def process_frame(frame, window_name):
     if frame.ndim == 3:  # If the input frame has 3 channels (BGR)
@@ -17,8 +39,9 @@ def process_frame(frame, window_name):
     cv2.imshow(window_name, frame)
 
 def create_pipeline():
+    global device, detector
+
     # Initialize AprilTag detector
-    global detector
     detector = apriltag.Detector()
 
     # Initialize Luxonis OAK-1-MAX pipeline
@@ -56,8 +79,12 @@ def create_pipeline():
 
 def start_pipeline(pipeline):
     global device, color_queue, left_queue, right_queue
-    device = dai.Device(pipeline)
 
+    # Connect and start the device
+    device = dai.Device(pipeline)
+    device.startPipeline()
+
+    # Create output queues for color, left, and right streams
     color_queue = device.getOutputQueue(name="color", maxSize=1, blocking=False)
     left_queue = device.getOutputQueue(name="left", maxSize=1, blocking=False)
     right_queue = device.getOutputQueue(name="right", maxSize=1, blocking=False)
@@ -74,7 +101,9 @@ def start_pipeline(pipeline):
     cv2.moveWindow('Right Mono Camera', 1280, 0)
 
 def close_pipeline():
+    global device
     cv2.destroyAllWindows()
     device.close()
     device = None
+
 
